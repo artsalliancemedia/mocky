@@ -1,7 +1,9 @@
 import os
 import json
+import pickle
 from enum import Enum
 
+import redis
 from flask import Flask, request, Response
 from flask_restful import Resource, Api
 
@@ -41,26 +43,67 @@ class MethodFile(Enum):
 
 class Config:
     def __init__(self):
-        print(os.getcwd())
-        mock_workdir = os.getenv('MOCK_WORKDIR')
-        mock_endpoints = os.getenv('MOCK_ENDPOINTS', 'endpoints.json')
-        responses_dir_name = os.getenv('MOCK_RESPONSES_DIR_NAME', 'responses')
-
         self.mock_port = int(os.getenv('MOCK_PORT', 8080))
-        self.endpoints_file = os.path.join(mock_workdir, mock_endpoints)
-        self.responses_dir = os.path.join(mock_workdir, responses_dir_name)
+        self.responses_repository = os.getenv('RESPONSES_REPOSITORY', 'file_storage')
+        self.mock_endpoints = os.getenv('MOCK_ENDPOINTS', 'endpoints.json')
+        self.mock_workdir = os.getenv('MOCK_WORKDIR')
+        self.endpoints_file = os.path.join(self.mock_workdir, self.mock_endpoints)
+        responses_dir_name = os.getenv('MOCK_RESPONSES_DIR_NAME', 'responses')
+        self.responses_dir = os.path.join(self.mock_workdir, responses_dir_name)
+        if self.responses_repository == 'redis':
+            self._build_redis_storage_config()
+
+    def _build_redis_storage_config(self):
+        self.responses_dir = ''
+        self.redis_host = os.getenv('REDIS_HOST', 'localhost')
+        self.redis_port = int(os.getenv('REDIS_PORT', 6379))
+        self.redis_db = int(os.getenv('REDIS_DB', 0))
 
 
-class FileResource(Resource):
+class BaseResponseReader:
+    def get(self, response_path):
+        pass
+
+    def set(self, key, value):
+        pass
+
+
+class FileResponseReader:
+    def get(self, response_path):
+        with open(response_path) as f:
+            data = json.load(f)
+        return data
+
+    def set(self, key, value):
+        with open(key, 'w') as f:
+            json.dump(value, f)
+
+
+class RedisResponseReader:
+    def __init__(self, config):
+        self._reader = redis.StrictRedis(host=config.redis_host, port=config.redis_port, db=config.redis_db)
+
+    def get(self, response_path):
+        data = self._reader.get(response_path)
+        if data is not None:
+            data = pickle.loads(data)
+        return data
+
+    def set(self, key, value):
+        self._reader.set(key, pickle.dumps(value))
+
+
+class MockResource(Resource):
     _response_file_path = None
     _request_data = None
     _response = None
     _method = None
     _method_file = None
 
-    def __init__(self, responses_path, endpoint_path):
+    def __init__(self, responses_path, endpoint_path, response_reader):
         self._responses_path = responses_path
         self._endpoint_path = endpoint_path
+        self._response_reader = response_reader
 
     def get(self, **kwargs):
         self._process(**kwargs)
@@ -105,7 +148,7 @@ class FileResource(Resource):
         self._request_data = request_data
 
     def _save_request_data(self):
-        save_json(self._request_file_path, self._request_data)
+        self._response_reader.set(self._request_file_path, self._request_data)
 
     def _log_request_data(self):
         app.logger.info("REQUEST: %s" % (self._request_data,))
@@ -125,18 +168,26 @@ class FileResource(Resource):
 
     def _get_response(self):
         try:
-            response_data = load_json(self._response_file_path)
+            response_data = self._response_reader.get(self._response_file_path)
         except IOError:
-            if self._method_file == MethodFile.OPTIONS.value:
-                response_data = PREFLIGHT_RESPONSE
-            else:
-                response_data = METHOD_NOT_ALLOWED_RESPONSE
+            response_data = None
+
+        if response_data is None:
+            response_data = self._get_predefined_response()
+
         body = response_data.get('body')
         status_code = response_data.get('status_code')
         headers = response_data.get('headers')
         app.logger.info("RESPONSE: %s" % (response_data,))
         response = Response(json.dumps(body), status_code, headers)
         return response
+
+    def _get_predefined_response(self):
+        if self._method_file == MethodFile.OPTIONS.value:
+            response_data = PREFLIGHT_RESPONSE
+        else:
+            response_data = METHOD_NOT_ALLOWED_RESPONSE
+        return response_data
 
 
 if __name__ == '__main__':
@@ -146,10 +197,17 @@ if __name__ == '__main__':
     app = Flask(__name__)
     api = Api(app)
 
+    if config.responses_repository == 'file_storage':
+        response_reader = FileResponseReader()
+    else:
+        response_reader = RedisResponseReader(config)
+
     resources = load_json(config.endpoints_file)
+
     for resource in resources:
-        api.add_resource(FileResource, resource, endpoint=resource,
+        api.add_resource(MockResource, resource, endpoint=resource,
                          resource_class_kwargs={'responses_path': config.responses_dir,
-                                                'endpoint_path': resource[1:]})
+                                                'endpoint_path': resource[1:],
+                                                "response_reader": response_reader})
 
     app.run(debug=True, host='0.0.0.0', port=config.mock_port)
