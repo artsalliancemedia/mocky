@@ -98,10 +98,16 @@ class FileResource(Resource):
         self._process_request(**kwargs)
         self._response = self._get_response()
 
+    def _get_methon_file(self):
+        if self._method == 'POST' and self._request_data.get('body') and self._request_data.get('body').get('type'):
+            return 'post-{}.json'.format(self._request_data.get('body').get('type'))
+
+        return MethodFile[self._method].value
+
     def _process_request(self, **kwargs):
         self._method = request.method
-        self._method_file = MethodFile[self._method].value
         self._extract_request_data()
+        self._method_file = self._get_methon_file()
         self._update_file_paths(**kwargs)
         self._log_request_data()
         self._save_request_data()
