@@ -1,0 +1,61 @@
+{
+  "variables": {
+    "workspace_dir": "{{env `WORKSPACE_DIR`}}",
+    "docker_registry": "office-hub.docker.aamcn.com.cn:5000",
+    "tag": "{{env `IMAGE_TAG`}}",
+    "version": "{{env `MOCK_VERSION`}}"
+  },
+  "builders": [
+    {
+      "type": "docker",
+      "image": "python:3.6",
+      "commit": true,
+      "changes": [
+        "LABEL maintainer=artsalliancemedia.com version={{user `version`}}",
+        "ENV MOCK_WORKDIR=/mock",
+        "EXPOSE 8080",
+        "VOLUME /mock",
+        "WORKDIR /mock",
+        "ENTRYPOINT [\"/docker-entrypoint.sh\"]",
+        "CMD [\"mock\"]"
+      ]
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "file",
+      "source": "{{user `workspace_dir`}}/mock.py",
+      "destination": "/"
+    },
+    {
+      "type": "file",
+      "source": "{{user `workspace_dir`}}/ops/docker-entrypoint.sh",
+      "destination": "/"
+    },
+    {
+      "type": "file",
+      "source": "{{user `workspace_dir`}}/requirements.txt",
+      "destination": "/tmp/"
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "pip3 install --upgrade -r /tmp/requirements.txt -i https://pypi.doubanio.com/simple"
+      ]
+    }
+  ],
+  "post-processors": [
+    [
+      {
+        "type": "docker-tag",
+        "repository": "{{user `docker_registry`}}/aam_mocky",
+        "tag": "{{user `tag`}}"
+      },
+      {
+        "type": "docker-push",
+        "ecr_login": false,
+        "login_server": "https://{{user `docker_registry`}}/aam_mocky"
+      }
+    ]
+  ]
+}

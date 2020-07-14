@@ -18,3 +18,6 @@ docker-login-aws-ecr:
 
 docker-build-mocky: docker-login-aws-ecr
 	$(PACKER) build ops/mocky_packer.json
+
+docker-build-mocky-china:
+	$(PACKER) build ops/mocky_packer_china.json
